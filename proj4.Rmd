@@ -60,7 +60,7 @@ glmm_sae1 <- glmmTMB(sae ~ group * time + sex + age, data = d, family = binomial
 glmm_sae2 <- glmmTMB(sae ~ group * time + sex + age + site, data = d, family = binomial())
 #glmm with site random intercept
 glmm_sae3 <- glmmTMB(sae ~ group * time + sex + age + (1|site), data = d, family = binomial())
-glmm_sae4 <- glmmTMB(sae ~ group * time + sex + age + (1|site:id), data = d, family = binomial())
+glmm_sae4 <- glmmTMB(sae ~ group * time + sex + age + (1|id), data = d, family = binomial())
 #gee
 gee_sae <- geeglm(
   sae ~ group * time + sex + age + site, 
@@ -80,28 +80,29 @@ summary(model_firth)
 
 AIC(glmm_sae1, glmm_sae2, glmm_sae3, glmm_sae4)
 QIC(gee_sae)
-summary(glmm_sae3)
+summary(glmm_sae4)
 summary(gee_sae)
 # compares groups within each time point
 library(emmeans)
-emmeans(model_firth, pairwise ~ group | time)
+emmeans(glmm_sae3, pairwise ~ group | time)
 
 # Extract linear predictor (logit)
 d$pred <- predict(glmm_sae4, type = "link")
 
-# Linearity plot: age vs. logitggplot(d, aes(x = age, y = pred)) +
-  geom_point(alpha = 0.3) +
+# Linearity plot: age vs. logit
+ggplot(d, aes(x = age, y = pred)) +
+geom_point(alpha = 0.3) +
   labs(title = "Linearity Check: Age vs. Logit", 
        y = "Predicted Logit", x = "Age")
 
-re_list <- ranef(glmm_sae4)$cond[["site:id"]]
+re_list <- ranef(glmm_sae4)$cond[["id"]]
 re_intercepts <- re_list[["(Intercept)"]]
 par(mfrow = c(1, 2))
 hist(re_intercepts,
-     main = "Histogram of Random Intercepts (site:id)",
+     main = "Histogram of Random Intercepts (id)",
      xlab = "Random Intercept Value")
 qqnorm(re_intercepts,
-       main = "QQ Plot of Random Intercepts (site:id)")
+       main = "QQ Plot of Random Intercepts (id)")
 qqline(re_intercepts, col = "red")
 
 
