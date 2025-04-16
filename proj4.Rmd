@@ -1,0 +1,139 @@
+---
+title: "proj4"
+author: "Jiayi Shi"
+date: "2025-04-10"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+warning = FALSE,
+message=F,
+fig.width = 6,
+fig.asp = .6,
+out.width = "90%")
+library(tidyverse)
+library(table1)
+library(gtsummary)
+library(knitr)
+library(patchwork)
+
+library(readxl)
+library(geepack)
+library(glmmTMB)
+library(survival)  
+library(survminer)  
+```
+
+# Load data
+
+```{r}
+sae <- read_excel("Q2b.xlsx") %>% 
+  janitor::clean_names()
+baseline <- read_excel("Q2b_BL.xlsx") %>% 
+  janitor::clean_names() %>% 
+  mutate(sex = factor(sex, levels = c(0, 1), labels = c("female", "male")))
+
+df <- left_join(sae, baseline, by="id") %>% 
+  mutate(group = factor(group, levels = c(0,1), labels = c("Control", "Vaccine")),
+         time = factor(time, levels = c(1,2,3), labels = c("Month1", "Month2", "Month3")))
+
+infection_df <- read_excel("Q2c.xlsx") %>% 
+  janitor::clean_names()
+
+```
+
+
+### Part A: SAE Analysis ###
+
+```{r A}
+# GEE logistic regression 
+#gee_sae <- geeglm(sae ~ group * time + sex + age, data = df, id = , family = binomial, corstr = "ar1")
+#summary(gee_sae)
+d = df %>% drop_na()
+sum(d$sae)
+nrow(d)
+
+#glm
+glmm_sae1 <- glmmTMB(sae ~ group * time + sex + age, data = d, family = binomial())
+#glm controlling for site
+glmm_sae2 <- glmmTMB(sae ~ group * time + sex + age + site, data = d, family = binomial())
+#glmm with site random intercept
+glmm_sae3 <- glmmTMB(sae ~ group * time + sex + age + (1|site), data = d, family = binomial())
+glmm_sae4 <- glmmTMB(sae ~ group * time + sex + age + (1|site:id), data = d, family = binomial())
+#gee
+gee_sae <- geeglm(
+  sae ~ group * time + sex + age + site, 
+  data = d, 
+  family = binomial, 
+  id = id,                    # the clustering variable
+  corstr = "exchangeable"     # or "ar1", "independence", etc.
+)
+
+#Firth’s Penalized Logistic Regression 
+library(logistf)
+model_firth <- logistf(
+  sae ~ group * time + sex + age,
+  data = d
+)
+summary(model_firth)
+
+AIC(glmm_sae1, glmm_sae2, glmm_sae3, glmm_sae4)
+QIC(gee_sae)
+summary(glmm_sae3)
+summary(gee_sae)
+# compares groups within each time point
+library(emmeans)
+emmeans(model_firth, pairwise ~ group | time)
+
+# Extract linear predictor (logit)
+d$pred <- predict(glmm_sae4, type = "link")
+
+# Linearity plot: age vs. logitggplot(d, aes(x = age, y = pred)) +
+  geom_point(alpha = 0.3) +
+  labs(title = "Linearity Check: Age vs. Logit", 
+       y = "Predicted Logit", x = "Age")
+
+re_list <- ranef(glmm_sae4)$cond[["site:id"]]
+re_intercepts <- re_list[["(Intercept)"]]
+par(mfrow = c(1, 2))
+hist(re_intercepts,
+     main = "Histogram of Random Intercepts (site:id)",
+     xlab = "Random Intercept Value")
+qqnorm(re_intercepts,
+       main = "QQ Plot of Random Intercepts (site:id)")
+qqline(re_intercepts, col = "red")
+
+
+```
+
+### Part B: Time-to-Infection Analysis ###
+
+```{r B}
+sum(infection_df$infection)
+# Fit a Kaplan-Meier survival curve.
+km_fit <- survfit(Surv(enrollment_time, last_fu_time, infection) ~ 1, data = infection_df)
+
+# Plot the survival curve
+ggsurvplot(km_fit, conf.int = TRUE,
+           xlab = "Days since Second Shot", 
+           ylab = "Survival (No Infection)",
+           title = "Kaplan-Meier Curve for Time-to-Infection")
+
+summary(km_fit, times = 365)
+
+median <- summary(km_fit)$table["median"]
+cat("Median time-to-infection (days):", median, "\n")
+# the median time-to-infection might not be reached (i.e., the survival function does not drop below 50%)
+
+restricted_mean <- summary(km_fit)$table["rmean"]
+
+cat("Restricted mean time-to-infection (days):", restricted_mean, "\n")
+
+# Note:
+# In many vaccine studies, if a majority of subjects do not become infected,
+
+# and the mean time-to-infection (restricted mean) should be reported with the time horizon clearly defined.
+
+```
+
