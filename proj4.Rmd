@@ -50,17 +50,29 @@ infection_df <- read_excel("Q2c.xlsx") %>%
 # GEE logistic regression 
 #gee_sae <- geeglm(sae ~ group * time + sex + age, data = df, id = , family = binomial, corstr = "ar1")
 #summary(gee_sae)
+
+table1(~time|group,df %>% mutate(sae=factor(sae)))
+
+table1(~sae+age+sex|group,df %>% mutate(sae=factor(sae)) %>% distinct(id, .keep_all=T))
+
+library(naniar)
+mcar_test(df) #MAR/MNAR
+
 d = df %>% drop_na()
 sum(d$sae)
 nrow(d)
 
 #glm
-glmm_sae1 <- glmmTMB(sae ~ group * time + sex + age, data = d, family = binomial())
+glmm_sae0 <- glmmTMB(sae ~ group + time + sex + age, data = df, family = binomial())
+glmm_sae1 <- glmmTMB(sae ~ group * time + sex + age, data = df, family = binomial())
+anova(glmm_sae0,glmm_sae1) #interaction term not significant
 #glm controlling for site
-glmm_sae2 <- glmmTMB(sae ~ group * time + sex + age + site, data = d, family = binomial())
+glmm_sae2 <- glmmTMB(sae ~ group * time + sex + age + site, data = df, family = binomial())
 #glmm with site random intercept
-glmm_sae3 <- glmmTMB(sae ~ group * time + sex + age + (1|site), data = d, family = binomial())
-glmm_sae4 <- glmmTMB(sae ~ group * time + sex + age + (1|id), data = d, family = binomial())
+glmm_sae3 <- glmmTMB(sae ~ group * time + sex + age + (1|site), data = df, family = binomial())
+glmm_sae4 <- glmmTMB(sae ~ group * time + sex + age + (1|id), data = df, family = binomial())
+glmm_sae5 <- glmmTMB(sae ~ group * time + sex + age + (1|id/site), data = d, family = binomial())
+summary(glmm_sae5)
 #gee
 gee_sae <- geeglm(
   sae ~ group * time + sex + age + site, 
@@ -74,7 +86,7 @@ gee_sae <- geeglm(
 library(logistf)
 model_firth <- logistf(
   sae ~ group * time + sex + age,
-  data = d
+  data = df
 )
 summary(model_firth)
 
@@ -87,7 +99,7 @@ library(emmeans)
 emmeans(glmm_sae3, pairwise ~ group | time)
 
 # Extract linear predictor (logit)
-d$pred <- predict(glmm_sae4, type = "link")
+d$pred <- predict(glmm_sae5, type = "link")
 
 # Linearity plot: age vs. logit
 ggplot(d, aes(x = age, y = pred)) +
@@ -95,7 +107,7 @@ geom_point(alpha = 0.3) +
   labs(title = "Linearity Check: Age vs. Logit", 
        y = "Predicted Logit", x = "Age")
 
-re_list <- ranef(glmm_sae4)$cond[["id"]]
+re_list <- ranef(glmm_sae5)$cond[["id"]]
 re_intercepts <- re_list[["(Intercept)"]]
 par(mfrow = c(1, 2))
 hist(re_intercepts,
@@ -115,6 +127,60 @@ sum(infection_df$infection)
 # Fit a Kaplan-Meier survival curve.
 km_fit <- survfit(Surv(enrollment_time, last_fu_time, infection) ~ 1, data = infection_df)
 
+library(flexsurv)
+
+# 2. Fit parametric models using flexsurvreg
+weibull_fit <- flexsurvreg(Surv(enrollment_time, last_fu_time, infection) ~ 1, data = infection_df, dist = "weibull")
+
+loglog_fit <- flexsurvreg(Surv(enrollment_time, last_fu_time, infection) ~ 1,  data = infection_df, dist = "llogis")
+
+lognormal_fit <- flexsurvreg(Surv(enrollment_time, last_fu_time, infection) ~ 1,  data = infection_df, dist = "lnorm")
+
+gompertz_fit <- flexsurvreg(Surv(enrollment_time, last_fu_time, infection) ~ 1, data = infection_df, dist = "gompertz")
+
+model_list <- list(Weibull = weibull_fit,
+                   LogLogistic = loglog_fit,
+                   LogNormal = lognormal_fit,
+                   Gompertz = gompertz_fit)
+
+sapply(model_list, function(fit) fit$AIC)
+
+km_df <- data.frame(
+  time = km_fit$time,
+  surv = km_fit$surv
+)
+times <- seq(0, max(km_fit$time), length.out = 200)
+
+model_surv <- function(fit, dist_name) {
+  data.frame(
+    time = times,
+    surv = summary(fit, t = times)[[1]]$est,
+    model = dist_name
+  )
+}
+
+weibull_df   <- model_surv(weibull_fit, "Weibull")
+loglog_df    <- model_surv(loglog_fit, "Log-logistic")
+lognormal_df <- model_surv(lognormal_fit, "Log-normal")
+gompertz_df  <- model_surv(gompertz_fit, "Gompertz")
+all_models_df <- bind_rows(weibull_df, loglog_df, lognormal_df, gompertz_df)
+ggplot() +
+  geom_step(data = km_df, aes(x = time, y = surv), color = "black", size = 1.2, linetype = "solid") +
+  geom_line(data = all_models_df, aes(x = time, y = surv, color = model), size = 1) +
+  labs(x = "Time", y = "Survival Probability",
+       title = "Kaplan-Meier vs Parametric Survival Models") +
+  theme_minimal() +
+  scale_color_manual(values = c("Weibull" = "blue", 
+                                "Log-logistic" = "red", 
+                                "Log-normal" = "green", 
+                                "Gompertz" = "purple")) +
+  theme(legend.title = element_blank())
+
+#lognormal model
+summary(lognormal_fit, t = 365, type = "survival")
+summary(lognormal_fit, type = "quantile", quantiles = 0.5)
+summary(lognormal_fit, type = "mean")
+summary(lognormal_fit)
 # Plot the survival curve
 ggsurvplot(km_fit, conf.int = TRUE,
            xlab = "Days since Second Shot", 
